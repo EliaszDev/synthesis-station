@@ -38,8 +38,15 @@ python okf_models.py check-links kb/
 python arxiv_ingest.py 1706.03762 --output-dir ./kb/papers
 
 # Ingest a paper with PDF download + LLM synthesis
-# Requires Ollama running locally OR an OpenAI/Anthropic API key
+# Works with Ollama (local) or 15+ cloud providers via LiteLLM
 python arxiv_ingest.py 1706.03762 --synthesize --output-dir ./kb/papers
+
+# Use Kimi (Moonshot AI)
+export MOONSHOT_API_KEY=... 
+python arxiv_ingest.py 1706.03762 --synthesize --api-model moonshot/kimi-k2-6
+
+# See all supported providers
+python -c "from synthesis.llm import SUPPORTED_PROVIDERS; import json; print(json.dumps(SUPPORTED_PROVIDERS, indent=2))"
 ```
 
 ## OKF Schema

@@ -306,8 +306,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--api-model",
-        default="gpt-4o-mini",
-        help="API model identifier via LiteLLM",
+        default="openai/gpt-4o-mini",
+        help="API model identifier via LiteLLM (e.g., openai/gpt-4o-mini, moonshot/kimi-k2-6, anthropic/claude-3-5-sonnet)",
     )
     parser.add_argument(
         "--no-authors",

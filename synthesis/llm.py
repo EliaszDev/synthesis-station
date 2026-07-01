@@ -23,7 +23,27 @@ from litellm import completion
 
 
 DEFAULT_LOCAL_MODEL = "ollama/llama3.1"
-DEFAULT_API_MODEL = "gpt-4o-mini"
+DEFAULT_API_MODEL = "openai/gpt-4o-mini"
+
+# Supported AI compute providers via LiteLLM.
+# Each entry maps the environment variable name to the LiteLLM provider prefix.
+SUPPORTED_PROVIDERS: list[dict[str, str]] = [
+    {"name": "OpenAI", "env_var": "OPENAI_API_KEY", "prefix": "openai"},
+    {"name": "Anthropic", "env_var": "ANTHROPIC_API_KEY", "prefix": "anthropic"},
+    {"name": "Google Gemini", "env_var": "GEMINI_API_KEY", "prefix": "gemini"},
+    {"name": "Azure OpenAI", "env_var": "AZURE_API_KEY", "prefix": "azure"},
+    {"name": "Groq", "env_var": "GROQ_API_KEY", "prefix": "groq"},
+    {"name": "Together AI", "env_var": "TOGETHERAI_API_KEY", "prefix": "together_ai"},
+    {"name": "Mistral AI", "env_var": "MISTRAL_API_KEY", "prefix": "mistral"},
+    {"name": "Cohere", "env_var": "COHERE_API_KEY", "prefix": "cohere"},
+    {"name": "DeepSeek", "env_var": "DEEPSEEK_API_KEY", "prefix": "deepseek"},
+    {"name": "Moonshot AI", "env_var": "MOONSHOT_API_KEY", "prefix": "moonshot"},
+    {"name": "xAI", "env_var": "XAI_API_KEY", "prefix": "xai"},
+    {"name": "Perplexity", "env_var": "PERPLEXITYAI_API_KEY", "prefix": "perplexity"},
+    {"name": "AI21", "env_var": "AI21_API_KEY", "prefix": "ai21"},
+    {"name": "Replicate", "env_var": "REPLICATE_API_KEY", "prefix": "replicate"},
+    {"name": "OpenRouter", "env_var": "OPENROUTER_API_KEY", "prefix": "openrouter"},
+]
 
 
 PAPER_SYNTHESIS_PROMPT = """\
@@ -118,13 +138,17 @@ class SynthesisLLM:
             return False
 
     def _is_api_available(self) -> bool:
-        """Check if any LiteLLM-supported API key is configured."""
-        return bool(
-            os.environ.get("OPENAI_API_KEY")
-            or os.environ.get("ANTHROPIC_API_KEY")
-            or os.environ.get("MOONSHOT_API_KEY")
-            or os.environ.get("LITELLM_API_KEY")
-        )
+        """Check if any supported AI compute API key is configured."""
+        return any(os.environ.get(provider["env_var"]) for provider in SUPPORTED_PROVIDERS)
+
+    @staticmethod
+    def list_available_providers() -> list[str]:
+        """Return the names of providers with configured API keys."""
+        return [
+            provider["name"]
+            for provider in SUPPORTED_PROVIDERS
+            if os.environ.get(provider["env_var"])
+        ]
 
     def _complete(self, model: str, prompt: str) -> str:
         """Call LiteLLM completion and return message content."""

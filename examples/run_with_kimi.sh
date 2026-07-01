@@ -1,9 +1,10 @@
 #!/bin/bash
 # Example: run Synthesis Station with a Kimi (Moonshot) API key
+#
+# Set your API key before running, e.g.:
+#   export MOONSHOT_API_KEY="sk-..."
 
-export MOONSHOT_API_KEY="your-kimi-api-key-here"
-
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 source venv/bin/activate
 
 python arxiv_ingest.py 1706.03762 \
