@@ -20,6 +20,11 @@ The output is not a chat. It is a **git-trackable, agent-readable knowledge base
 ## Quick Start
 
 ```bash
+# Install dependencies
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
 # Validate the sample knowledge base
 python okf_models.py validate kb/
 
@@ -28,6 +33,13 @@ python okf_models.py stats kb/
 
 # Check for broken internal links
 python okf_models.py check-links kb/
+
+# Ingest a paper (metadata + author stubs)
+python arxiv_ingest.py 1706.03762 --output-dir ./kb/papers
+
+# Ingest a paper with PDF download + LLM synthesis
+# Requires Ollama running locally OR an OpenAI/Anthropic API key
+python arxiv_ingest.py 1706.03762 --synthesize --output-dir ./kb/papers
 ```
 
 ## OKF Schema
@@ -56,9 +68,9 @@ kb/
 |-------|------|
 | Orchestration | LangGraph |
 | RAG | LlamaIndex + pgvector |
-| Ingestion | arXiv API, YouTube, GitHub API, RSS |
-| Multimodal | Whisper, VQA, video-to-text models |
-| LLM Router | LiteLLM |
+| Ingestion | arXiv API, GitHub API, RSS |
+| PDF Parsing | PyMuPDF |
+| LLM Router | LiteLLM (Ollama + OpenAI/Anthropic fallback) |
 | Evals | Ragas + LLM-as-a-judge |
 | LLMOps | Weights & Biases / MLflow |
 | Schema | hermes-okf v0.5.0 |
