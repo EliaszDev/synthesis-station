@@ -122,6 +122,7 @@ class SynthesisLLM:
         return bool(
             os.environ.get("OPENAI_API_KEY")
             or os.environ.get("ANTHROPIC_API_KEY")
+            or os.environ.get("MOONSHOT_API_KEY")
             or os.environ.get("LITELLM_API_KEY")
         )
 
