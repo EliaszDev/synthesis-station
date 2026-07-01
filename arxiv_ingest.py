@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-Synthesis Station arXiv ingest demo.
+Synthesis Station arXiv ingest pipeline.
 
-Fetches a paper from the arXiv API and writes a paper_synthesis OKF note.
+Fetches paper metadata, optionally downloads the PDF, and synthesizes
+structured OKF notes with local or API LLM fallback.
 
 Usage:
     python arxiv_ingest.py 1706.03762
-    python arxiv_ingest.py 1706.03762 --output-dir ./kb/papers
+    python arxiv_ingest.py 1706.03762 --synthesize --output-dir ./kb/papers
+    python arxiv_ingest.py 1706.03762 --local-model ollama/llama3.1 --api-model gpt-4o-mini
 
 Requires:
-    pip install requests pyyaml
+    pip install requests pyyaml pymupdf litellm
 """
 
 from __future__ import annotations
@@ -20,10 +22,12 @@ import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 import requests
 import yaml
+
+from synthesis.llm import SynthesisLLM, SynthesisResult
+from synthesis.pdf import download_pdf, extract_text_from_pdf
 
 
 ARXIV_API_URL = "http://export.arxiv.org/api/query"
@@ -55,7 +59,11 @@ def parse_atom(atom_xml: str) -> dict[str, Any]:
     summary = _get_text(entry, "atom:summary", ns)
     published = _get_text(entry, "atom:published", ns)
     updated = _get_text(entry, "atom:updated", ns)
-    authors = [author.find("atom:name", ns).text for author in entry.findall("atom:author", ns) if author.find("atom:name", ns) is not None]
+    authors = [
+        author.find("atom:name", ns).text
+        for author in entry.findall("atom:author", ns)
+        if author.find("atom:name", ns) is not None
+    ]
     categories = [cat.get("term") for cat in entry.findall("atom:category", ns) if cat.get("term")]
     doi = _get_text(entry, "arxiv:doi", ns) or None
 
@@ -132,14 +140,50 @@ def build_author_stub(name: str) -> str:
     return "---\n" + yaml.safe_dump(frontmatter, sort_keys=False) + "---\n\n" + body
 
 
-def build_okf_note(arxiv_id: str, paper: dict[str, Any]) -> str:
-    """Construct the full OKF markdown string."""
+def build_concept_okf_id(concept: str) -> str:
+    """Generate a stable concept OKF id from a concept string."""
+    normalized = OKF_ID_PATTERN.sub("-", concept.lower()).strip("-")
+    return f"concept-{normalized}"
+
+
+def build_concept_stub(concept: str) -> str:
+    """Generate a minimal concept OKF note for an extracted concept."""
+    okf_id = build_concept_okf_id(concept)
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    frontmatter = {
+        "okf_version": "0.5.0",
+        "okf_id": okf_id,
+        "okf_type": "concept",
+        "title": concept,
+        "created_at": now,
+        "updated_at": now,
+        "confidence": 0.8,
+        "status": "published",
+        "concept_type": "technique",
+        "related_concepts": [],
+        "related_papers": [],
+        "related_repos": [],
+    }
+    body = f"# {concept}\n\nConcept extracted from paper synthesis. See **[[{okf_id}]]**.\n"
+    return "---\n" + yaml.safe_dump(frontmatter, sort_keys=False) + "---\n\n" + body
+
+
+def build_okf_note(
+    arxiv_id: str,
+    paper: dict[str, Any],
+    synthesis: SynthesisResult | None = None,
+) -> str:
+    """Construct the full OKF markdown string, optionally enriched with synthesis."""
     okf_id = make_okf_id(arxiv_id)
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     published_date = paper["published"][:10] if paper["published"] else ""
 
     author_okf_ids = [build_author_okf_id(name) for name in paper["authors"]]
+    concept_okf_ids = []
+    if synthesis and synthesis.concepts:
+        concept_okf_ids = [build_concept_okf_id(c) for c in synthesis.concepts]
 
+    confidence = 0.85 if synthesis is None else 0.75
     frontmatter = {
         "okf_version": "0.5.0",
         "okf_id": okf_id,
@@ -150,19 +194,19 @@ def build_okf_note(arxiv_id: str, paper: dict[str, Any]) -> str:
         "source": "arxiv",
         "source_id": arxiv_id,
         "source_url": paper["abs_url"] or f"https://arxiv.org/abs/{arxiv_id}",
-        "confidence": 0.85,
+        "confidence": confidence,
         "status": "published",
         "authors": author_okf_ids,
         "published_date": published_date,
         "arxiv_categories": paper["categories"],
-        "concepts": [],
-        "methods": [],
-        "datasets": [],
-        "models": [],
-        "metrics": [],
-        "key_findings": [],
-        "limitations": [],
-        "related": [],
+        "concepts": concept_okf_ids,
+        "methods": synthesis.methods if synthesis else [],
+        "datasets": synthesis.datasets if synthesis else [],
+        "models": synthesis.models if synthesis else [],
+        "metrics": synthesis.metrics if synthesis else [],
+        "key_findings": synthesis.key_findings if synthesis else [],
+        "limitations": synthesis.limitations if synthesis else [],
+        "related": synthesis.related if synthesis else [],
         "license": "unknown",
         "citations": [
             {
@@ -176,6 +220,32 @@ def build_okf_note(arxiv_id: str, paper: dict[str, Any]) -> str:
         ],
     }
 
+    synthesis_section = ""
+    if synthesis:
+        findings = "\n".join(f"- {f}" for f in synthesis.key_findings)
+        methods = "\n".join(f"- {m}" for m in synthesis.methods)
+        limitations = "\n".join(f"- {l}" for l in synthesis.limitations)
+        synthesis_section = textwrap.dedent(
+            f"""\
+
+            ## Synthesis Summary
+
+            {synthesis.summary}
+
+            ## Key Findings
+
+            {findings}
+
+            ## Methods
+
+            {methods}
+
+            ## Limitations
+
+            {limitations}
+            """
+        )
+
     body = textwrap.dedent(
         f"""\
         # {paper["title"]}
@@ -183,6 +253,7 @@ def build_okf_note(arxiv_id: str, paper: dict[str, Any]) -> str:
         ## TL;DR
 
         {paper["summary"][:500]}{"..." if len(paper["summary"]) > 500 else ""}
+        {synthesis_section}
 
         ## Abstract
 
@@ -208,7 +279,9 @@ def build_okf_note(arxiv_id: str, paper: dict[str, Any]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Ingest an arXiv paper into an OKF note")
+    parser = argparse.ArgumentParser(
+        description="Ingest an arXiv paper into an OKF note"
+    )
     parser.add_argument("arxiv_id", help="arXiv paper ID (e.g., 1706.03762)")
     parser.add_argument(
         "--output-dir",
@@ -216,18 +289,77 @@ def main(argv: list[str] | None = None) -> int:
         default=Path("./kb/papers"),
         help="Directory to write the OKF note",
     )
-    parser.add_argument("--dry-run", action="store_true", help="Print the OKF note without writing")
+    parser.add_argument(
+        "--synthesize",
+        action="store_true",
+        help="Download PDF and run LLM synthesis",
+    )
+    parser.add_argument(
+        "--download-pdf",
+        action="store_true",
+        help="Keep the downloaded PDF in the output directory",
+    )
+    parser.add_argument(
+        "--local-model",
+        default="ollama/llama3.1",
+        help="Local model identifier via LiteLLM",
+    )
+    parser.add_argument(
+        "--api-model",
+        default="gpt-4o-mini",
+        help="API model identifier via LiteLLM",
+    )
+    parser.add_argument(
+        "--no-authors",
+        action="store_true",
+        help="Skip writing author stub notes",
+    )
+    parser.add_argument(
+        "--no-concepts",
+        action="store_true",
+        help="Skip writing concept stub notes",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the OKF note without writing",
+    )
     args = parser.parse_args(argv)
 
     print(f"Fetching arXiv:{args.arxiv_id} ...")
     paper = fetch_arxiv_paper(args.arxiv_id)
-    okf_content = build_okf_note(args.arxiv_id, paper)
+
+    synthesis = None
+    if args.synthesize:
+        print("Downloading PDF...")
+        pdf_path = download_pdf(args.arxiv_id, args.output_dir)
+        print(f"Downloaded PDF to {pdf_path}")
+
+        print("Extracting text from PDF...")
+        pdf_text = extract_text_from_pdf(pdf_path)
+
+        print("Synthesizing with LLM...")
+        llm = SynthesisLLM(
+            local_model=args.local_model,
+            api_model=args.api_model,
+        )
+        synthesis = llm.synthesize_paper(pdf_text)
+
+        if not args.download_pdf:
+            pdf_path.unlink()
+
+    okf_content = build_okf_note(args.arxiv_id, paper, synthesis)
 
     if args.dry_run:
         print(okf_content)
-        for author in paper["authors"]:
-            print("\n" + "=" * 60 + "\n")
-            print(build_author_stub(author))
+        if not args.no_authors:
+            for author in paper["authors"]:
+                print("\n" + "=" * 60 + "\n")
+                print(build_author_stub(author))
+        if not args.no_concepts and synthesis:
+            for concept in synthesis.concepts:
+                print("\n" + "=" * 60 + "\n")
+                print(build_concept_stub(concept))
         return 0
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -236,12 +368,21 @@ def main(argv: list[str] | None = None) -> int:
     output_path.write_text(okf_content, encoding="utf-8")
     print(f"Wrote OKF note to {output_path}")
 
-    people_dir = args.output_dir.parent / "people"
-    people_dir.mkdir(parents=True, exist_ok=True)
-    for author in paper["authors"]:
-        author_path = people_dir / f"{build_author_okf_id(author)}.md"
-        author_path.write_text(build_author_stub(author), encoding="utf-8")
-        print(f"Wrote author stub to {author_path}")
+    if not args.no_authors:
+        people_dir = args.output_dir.parent / "people"
+        people_dir.mkdir(parents=True, exist_ok=True)
+        for author in paper["authors"]:
+            author_path = people_dir / f"{build_author_okf_id(author)}.md"
+            author_path.write_text(build_author_stub(author), encoding="utf-8")
+            print(f"Wrote author stub to {author_path}")
+
+    if not args.no_concepts and synthesis:
+        concepts_dir = args.output_dir.parent / "concepts"
+        concepts_dir.mkdir(parents=True, exist_ok=True)
+        for concept in synthesis.concepts:
+            concept_path = concepts_dir / f"{build_concept_okf_id(concept)}.md"
+            concept_path.write_text(build_concept_stub(concept), encoding="utf-8")
+            print(f"Wrote concept stub to {concept_path}")
 
     return 0
 
